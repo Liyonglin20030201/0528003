@@ -1,7 +1,9 @@
-"""模块一：知识库构建
+"""模块一：知识库构建与更新
 
 将校园文档拆分成小段并存入 FAISS 向量数据库。
+支持新增、删除文档后重新构建。
 """
+import shutil
 from pathlib import Path
 
 from langchain_community.document_loaders import DirectoryLoader, TextLoader
@@ -70,6 +72,62 @@ def init_knowledge_base() -> FAISS:
     embeddings = get_embeddings()
     vector_store = build_vector_store(chunks, embeddings)
     return vector_store
+
+
+# ───────────────────────────────────────────────
+# 知识库更新功能
+# ───────────────────────────────────────────────
+
+
+def list_documents() -> list[str]:
+    """列出当前知识库中所有文档文件名"""
+    docs_dir = config.DOCS_DIR
+    if not docs_dir.exists():
+        return []
+    return [f.name for f in docs_dir.glob("**/*.txt")]
+
+
+def add_document(file_name: str, content: str) -> Path:
+    """新增文档到知识库目录
+
+    Args:
+        file_name: 文档文件名（如 "新文件.txt"）
+        content: 文档内容
+
+    Returns:
+        写入的文件路径
+    """
+    config.DOCS_DIR.mkdir(parents=True, exist_ok=True)
+    file_path = config.DOCS_DIR / file_name
+    file_path.write_text(content, encoding="utf-8")
+    print(f"[知识库] 已添加文档: {file_name}")
+    return file_path
+
+
+def delete_document(file_name: str) -> bool:
+    """从知识库目录删除指定文档
+
+    Args:
+        file_name: 要删除的文件名
+
+    Returns:
+        是否成功删除
+    """
+    file_path = config.DOCS_DIR / file_name
+    if file_path.exists():
+        file_path.unlink()
+        print(f"[知识库] 已删除文档: {file_name}")
+        return True
+    print(f"[知识库] 文档不存在: {file_name}")
+    return False
+
+
+def rebuild_knowledge_base() -> FAISS:
+    """重新构建知识库（删除旧向量库后从头构建）"""
+    if config.VECTOR_STORE_DIR.exists():
+        shutil.rmtree(config.VECTOR_STORE_DIR)
+        print("[知识库] 已清除旧向量数据库")
+    return init_knowledge_base()
 
 
 if __name__ == "__main__":

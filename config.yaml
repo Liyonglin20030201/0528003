@@ -1,0 +1,24 @@
+# 华智大学智能问答助手配置文件
+
+# 文本切分参数
+chunk_size: 500
+chunk_overlap: 100
+
+# 检索参数
+retrieval_top_k: 4
+
+# Embedding 模型（HuggingFace 中文模型）
+embedding_model_name: "shibing624/text2vec-base-chinese"
+
+# Qwen 大模型配置（通过 Ollama 调用）
+llm:
+  base_url: "http://localhost:11434/v1"
+  model_name: "qwen2.5:1.5b"
+  temperature: 0.3
+  max_tokens: 1024
+
+# Ollama 服务连接配置
+ollama:
+  health_url: "http://localhost:11434/api/tags"
+  max_retries: 3
+  retry_delay: 2  # 秒，首次重试等待时间（后续指数退避）
