@@ -67,6 +67,43 @@ def save_session(session_id: str, messages: list[dict], title: str | None = None
     file_path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
+def rename_session(session_id: str, new_title: str):
+    """重命名会话标题"""
+    _ensure_dir()
+    file_path = HISTORY_DIR / f"{session_id}.json"
+    if not file_path.exists():
+        return
+    try:
+        data = json.loads(file_path.read_text(encoding="utf-8"))
+        data["title"] = new_title
+        file_path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    except (json.JSONDecodeError, OSError):
+        pass
+
+
+def export_session_as_text(session_id: str) -> str:
+    """将会话导出为可读的文本格式"""
+    _ensure_dir()
+    file_path = HISTORY_DIR / f"{session_id}.json"
+    if not file_path.exists():
+        return ""
+    try:
+        data = json.loads(file_path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return ""
+
+    title = data.get("title", "未命名对话")
+    messages = data.get("messages", [])
+
+    lines = [f"对话标题：{title}", "=" * 40, ""]
+    for msg in messages:
+        role = "用户" if msg["role"] == "user" else "助手"
+        lines.append(f"【{role}】")
+        lines.append(msg["content"])
+        lines.append("")
+    return "\n".join(lines)
+
+
 def delete_session(session_id: str):
     """删除指定会话"""
     file_path = HISTORY_DIR / f"{session_id}.json"

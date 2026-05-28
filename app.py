@@ -23,6 +23,8 @@ from chat_history import (
     load_session,
     save_session,
     delete_session,
+    rename_session,
+    export_session_as_text,
     new_session_id,
 )
 from doc_parser import extract_text, SUPPORTED_EXTENSIONS
@@ -194,6 +196,7 @@ def render_chat_history_sidebar():
         st.session_state.session_id = new_session_id()
         st.session_state.messages = []
         st.session_state.sources = {}
+        st.session_state.pop("editing_session", None)
         st.rerun()
 
     sessions = list_sessions()
@@ -202,17 +205,51 @@ def render_chat_history_sidebar():
         return
 
     for session in sessions[:20]:
-        col1, col2 = st.columns([4, 1])
-        is_current = session["id"] == st.session_state.session_id
+        sid = session["id"]
+        is_current = sid == st.session_state.session_id
+
+        # 编辑标题模式
+        if st.session_state.get("editing_session") == sid:
+            new_title = st.text_input(
+                "新标题",
+                value=session["title"],
+                key=f"rename_input_{sid}",
+                label_visibility="collapsed",
+            )
+            c1, c2 = st.columns(2)
+            if c1.button("确认", key=f"rename_ok_{sid}"):
+                if new_title.strip():
+                    rename_session(sid, new_title.strip())
+                st.session_state.pop("editing_session", None)
+                st.rerun()
+            if c2.button("取消", key=f"rename_cancel_{sid}"):
+                st.session_state.pop("editing_session", None)
+                st.rerun()
+            continue
+
+        # 正常显示模式：标题按钮 + 操作图标
+        col_title, col_edit, col_export, col_del = st.columns([5, 1, 1, 1])
         label = f"{'▶ ' if is_current else ''}{session['title']}"
-        if col1.button(label, key=f"load_{session['id']}", disabled=is_current):
-            st.session_state.session_id = session["id"]
-            st.session_state.messages = load_session(session["id"])
+        if col_title.button(label, key=f"load_{sid}", disabled=is_current):
+            st.session_state.session_id = sid
+            st.session_state.messages = load_session(sid)
             st.session_state.sources = {}
             st.rerun()
-        if col2.button("🗑", key=f"delsess_{session['id']}"):
-            delete_session(session["id"])
-            if session["id"] == st.session_state.session_id:
+        if col_edit.button("✏️", key=f"edit_{sid}", help="重命名"):
+            st.session_state.editing_session = sid
+            st.rerun()
+        export_text = export_session_as_text(sid)
+        col_export.download_button(
+            "📥",
+            data=export_text,
+            file_name=f"{session['title']}.txt",
+            mime="text/plain",
+            key=f"export_{sid}",
+            help="导出为文本",
+        )
+        if col_del.button("🗑", key=f"delsess_{sid}", help="删除"):
+            delete_session(sid)
+            if sid == st.session_state.session_id:
                 st.session_state.session_id = new_session_id()
                 st.session_state.messages = []
                 st.session_state.sources = {}
