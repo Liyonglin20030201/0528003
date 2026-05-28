@@ -2,6 +2,7 @@
 
 将校园文档拆分成小段并存入 FAISS 向量数据库。
 支持新增、删除文档后重新构建。
+支持 .txt、.pdf、.docx 多种格式。
 """
 import shutil
 from pathlib import Path
@@ -10,19 +11,28 @@ from langchain_community.document_loaders import DirectoryLoader, TextLoader
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_community.vectorstores import FAISS
+from langchain.schema import Document
 
 import config
+from doc_parser import extract_text, SUPPORTED_EXTENSIONS
 
 
 def load_documents(docs_dir: Path = config.DOCS_DIR) -> list:
-    """从指定目录加载所有 txt 文档"""
-    loader = DirectoryLoader(
-        str(docs_dir),
-        glob="**/*.txt",
-        loader_cls=TextLoader,
-        loader_kwargs={"encoding": "utf-8"},
-    )
-    documents = loader.load()
+    """从指定目录加载所有支持格式的文档"""
+    documents = []
+    for ext in SUPPORTED_EXTENSIONS:
+        for file_path in docs_dir.glob(f"**/*.{ext}"):
+            try:
+                file_bytes = file_path.read_bytes()
+                text = extract_text(file_path.name, file_bytes)
+                if text.strip():
+                    doc = Document(
+                        page_content=text,
+                        metadata={"source": str(file_path)},
+                    )
+                    documents.append(doc)
+            except Exception as e:
+                print(f"[知识库] 加载文件失败 {file_path.name}: {e}")
     print(f"[知识库] 加载了 {len(documents)} 个文档")
     return documents
 
@@ -84,22 +94,28 @@ def list_documents() -> list[str]:
     docs_dir = config.DOCS_DIR
     if not docs_dir.exists():
         return []
-    return [f.name for f in docs_dir.glob("**/*.txt")]
+    files = []
+    for ext in SUPPORTED_EXTENSIONS:
+        files.extend(f.name for f in docs_dir.glob(f"**/*.{ext}"))
+    return sorted(files)
 
 
-def add_document(file_name: str, content: str) -> Path:
+def add_document(file_name: str, content: str | bytes) -> Path:
     """新增文档到知识库目录
 
     Args:
         file_name: 文档文件名（如 "新文件.txt"）
-        content: 文档内容
+        content: 文档内容（文本或二进制）
 
     Returns:
         写入的文件路径
     """
     config.DOCS_DIR.mkdir(parents=True, exist_ok=True)
     file_path = config.DOCS_DIR / file_name
-    file_path.write_text(content, encoding="utf-8")
+    if isinstance(content, bytes):
+        file_path.write_bytes(content)
+    else:
+        file_path.write_text(content, encoding="utf-8")
     print(f"[知识库] 已添加文档: {file_name}")
     return file_path
 

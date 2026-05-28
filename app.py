@@ -1,7 +1,7 @@
 """模块五：Streamlit 聊天界面
 
 支持多轮连续对话的校园问答助手前端。
-集成 Ollama 服务状态检测与知识库管理功能。
+集成 Ollama 服务状态检测、知识库管理、对话历史保存、引用来源显示。
 """
 import streamlit as st
 from langchain.schema import HumanMessage, AIMessage
@@ -18,6 +18,14 @@ from knowledge_base import (
 from retriever import Retriever
 from prompt_builder import build_prompt, format_context
 from llm_engine import get_llm, check_ollama_health, OllamaConnectionError
+from chat_history import (
+    list_sessions,
+    load_session,
+    save_session,
+    delete_session,
+    new_session_id,
+)
+from doc_parser import extract_text, SUPPORTED_EXTENSIONS
 import config
 
 
@@ -44,6 +52,13 @@ def initialize_system():
 
             st.session_state.initialized = True
 
+    if "session_id" not in st.session_state:
+        st.session_state.session_id = new_session_id()
+    if "messages" not in st.session_state:
+        st.session_state.messages = []
+    if "sources" not in st.session_state:
+        st.session_state.sources = {}
+
 
 def try_reconnect_ollama():
     """尝试重新连接 Ollama 服务"""
@@ -67,19 +82,34 @@ def get_chat_history() -> list:
     return history
 
 
-def process_query(query: str) -> str:
-    """处理用户问题：检索 → 组装提示 → 生成回答"""
+def process_query(query: str) -> tuple[str, list[dict]]:
+    """处理用户问题：检索 → 组装提示 → 生成回答
+
+    Returns:
+        (回答文本, 引用来源列表)
+    """
     if not st.session_state.ollama_ok:
         try_reconnect_ollama()
         if not st.session_state.ollama_ok:
             return (
                 "⚠️ 无法连接到 Ollama 服务，请确认服务已启动后重试。\n\n"
                 f"错误详情：{st.session_state.ollama_error}"
-            )
+            ), []
 
     docs = st.session_state.retriever.retrieve(query)
     context = format_context(docs)
     chat_history = get_chat_history()
+
+    # 构建引用来源信息
+    sources = []
+    for i, doc in enumerate(docs, 1):
+        source_path = doc.metadata.get("source", "未知来源")
+        source_name = source_path.split("\\")[-1].split("/")[-1]
+        sources.append({
+            "index": i,
+            "name": source_name,
+            "snippet": doc.page_content[:150] + "..." if len(doc.page_content) > 150 else doc.page_content,
+        })
 
     messages = st.session_state.prompt_template.format_messages(
         context=context,
@@ -89,15 +119,28 @@ def process_query(query: str) -> str:
 
     try:
         response = st.session_state.llm.invoke(messages)
-        return response.content
+        return response.content, sources
     except Exception:
         if not check_ollama_health():
             st.session_state.ollama_ok = False
             return (
                 "⚠️ Ollama 服务在推理过程中断开连接。\n\n"
                 "请检查服务状态后点击侧边栏「重新连接」按钮。"
-            )
+            ), []
         raise
+
+
+def render_sources(sources: list[dict]):
+    """渲染引用来源折叠面板"""
+    if not sources:
+        return
+    with st.expander("📚 引用来源", expanded=False):
+        for src in sources:
+            st.markdown(
+                f"**[资料{src['index']}]** {src['name']}\n\n"
+                f"> {src['snippet']}"
+            )
+            st.divider()
 
 
 def render_kb_management():
@@ -107,7 +150,6 @@ def render_kb_management():
     docs = list_documents()
     st.markdown(f"当前文档数量：**{len(docs)}**")
 
-    # 文档列表与删除
     if docs:
         with st.expander("查看/删除现有文档", expanded=False):
             for doc_name in docs:
@@ -118,21 +160,23 @@ def render_kb_management():
                     st.success(f"已删除: {doc_name}")
                     st.rerun()
 
-    # 上传新文档
     st.subheader("添加文档")
     uploaded_file = st.file_uploader(
-        "上传 .txt 文件",
-        type=["txt"],
+        "上传文档（支持 .txt / .pdf / .docx）",
+        type=SUPPORTED_EXTENSIONS,
         key="doc_uploader",
     )
     if uploaded_file is not None:
         if st.button("确认添加"):
-            content = uploaded_file.read().decode("utf-8")
-            add_document(uploaded_file.name, content)
-            st.success(f"已添加: {uploaded_file.name}")
-            st.rerun()
+            file_bytes = uploaded_file.read()
+            try:
+                extract_text(uploaded_file.name, file_bytes)
+                add_document(uploaded_file.name, file_bytes)
+                st.success(f"已添加: {uploaded_file.name}")
+                st.rerun()
+            except Exception as e:
+                st.error(f"文件解析失败: {e}")
 
-    # 重新构建知识库
     st.subheader("重建知识库")
     st.caption("添加或删除文档后，需重建知识库使更改生效")
     if st.button("重新构建知识库"):
@@ -140,6 +184,39 @@ def render_kb_management():
             vector_store = rebuild_knowledge_base()
             st.session_state.retriever = Retriever(vector_store)
         st.success("知识库重建完成！")
+
+
+def render_chat_history_sidebar():
+    """渲染对话历史管理侧边栏"""
+    st.header("对话历史")
+
+    if st.button("➕ 新建对话"):
+        st.session_state.session_id = new_session_id()
+        st.session_state.messages = []
+        st.session_state.sources = {}
+        st.rerun()
+
+    sessions = list_sessions()
+    if not sessions:
+        st.caption("暂无历史对话")
+        return
+
+    for session in sessions[:20]:
+        col1, col2 = st.columns([4, 1])
+        is_current = session["id"] == st.session_state.session_id
+        label = f"{'▶ ' if is_current else ''}{session['title']}"
+        if col1.button(label, key=f"load_{session['id']}", disabled=is_current):
+            st.session_state.session_id = session["id"]
+            st.session_state.messages = load_session(session["id"])
+            st.session_state.sources = {}
+            st.rerun()
+        if col2.button("🗑", key=f"delsess_{session['id']}"):
+            delete_session(session["id"])
+            if session["id"] == st.session_state.session_id:
+                st.session_state.session_id = new_session_id()
+                st.session_state.messages = []
+                st.session_state.sources = {}
+            st.rerun()
 
 
 def main():
@@ -154,7 +231,6 @@ def main():
 
     initialize_system()
 
-    # Ollama 服务状态提示
     if not st.session_state.ollama_ok:
         st.warning(
             "⚠️ Ollama 服务未就绪，问答功能暂不可用。\n\n"
@@ -162,13 +238,15 @@ def main():
             icon="🔌",
         )
 
-    if "messages" not in st.session_state:
-        st.session_state.messages = []
-
-    for msg in st.session_state.messages:
+    # 渲染已有消息
+    for i, msg in enumerate(st.session_state.messages):
         with st.chat_message(msg["role"]):
             st.markdown(msg["content"])
+            if msg["role"] == "assistant":
+                sources = st.session_state.sources.get(str(i), [])
+                render_sources(sources)
 
+    # 用户输入
     if query := st.chat_input("请输入你的问题，例如：博士生国家奖学金多少钱？"):
         st.session_state.messages.append({"role": "user", "content": query})
         with st.chat_message("user"):
@@ -176,19 +254,30 @@ def main():
 
         with st.chat_message("assistant"):
             with st.spinner("思考中..."):
-                response = process_query(query)
+                response, sources = process_query(query)
             st.markdown(response)
+            render_sources(sources)
 
+        msg_index = len(st.session_state.messages)
         st.session_state.messages.append({"role": "assistant", "content": response})
+        st.session_state.sources[str(msg_index)] = sources
 
+        # 自动保存对话历史
+        save_session(st.session_state.session_id, st.session_state.messages)
+
+    # 侧边栏
     with st.sidebar:
+        # 对话历史
+        render_chat_history_sidebar()
+
+        st.divider()
+
         # 系统信息
         st.header("系统信息")
         st.markdown(f"**模型:** `{config.LLM_MODEL_NAME}`")
         st.markdown(f"**Embedding:** `{config.EMBEDDING_MODEL_NAME}`")
         st.markdown(f"**检索 Top-K:** `{config.RETRIEVAL_TOP_K}`")
 
-        # Ollama 连接状态
         status = "🟢 已连接" if st.session_state.ollama_ok else "🔴 未连接"
         st.markdown(f"**Ollama 状态:** {status}")
         if not st.session_state.ollama_ok:
@@ -201,8 +290,10 @@ def main():
                     st.error("连接失败，请确认 Ollama 已启动。")
                 st.rerun()
 
-        if st.button("清空对话历史"):
+        if st.button("清空当前对话"):
             st.session_state.messages = []
+            st.session_state.sources = {}
+            save_session(st.session_state.session_id, [])
             st.rerun()
 
         st.divider()
